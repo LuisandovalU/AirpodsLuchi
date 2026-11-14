@@ -2,7 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
+mkdir -p .build/release /tmp/clang-module-cache
+swiftc -O -target arm64-apple-macosx14.4 \
+    -module-cache-path /tmp/clang-module-cache \
+    Sources/airpods/*.swift \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Sources/airpods/Info.plist \
+    -o .build/release/airpods
 
 BIN=".build/release/airpods"
 APP="airpods.app"

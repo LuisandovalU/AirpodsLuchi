@@ -17,7 +17,11 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>14.4</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Captura el audio del sistema para aplicar tu ecualizador personalizado y enviarlo a tus AirPods.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Usa el micrófono de la Mac para amplificar sonidos externos (Súper Oído) y detectar voces o alarmas.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Uses the camera to move the pointer from where you are looking.</string>
 	<key>NSMotionUsageDescription</key>

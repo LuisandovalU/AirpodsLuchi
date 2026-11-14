@@ -123,14 +123,24 @@ final class Streamer: NSObject, CMHeadphoneMotionManagerDelegate {
             }
         }
         connection.start(queue: .main)
+        manager.delegate = self
 
         guard manager.isDeviceMotionAvailable else {
             fputs(
-                "Headphone motion is unavailable. Wear AirPods that support head tracking and select them as the Mac output device.\n",
+                "Headphone motion is unavailable. Waiting for AirPods connection…\n",
                 stderr
             )
-            exit(1)
+            if LaunchOptions.current.streamOnly {
+                exit(1)
+            }
+            return
         }
+
+        beginMotionUpdatesIfPossible()
+    }
+
+    private func beginMotionUpdatesIfPossible() {
+        guard manager.isDeviceMotionAvailable, !manager.isDeviceMotionActive else { return }
 
         switch CMHeadphoneMotionManager.authorizationStatus() {
         case .denied:
@@ -138,10 +148,10 @@ final class Streamer: NSObject, CMHeadphoneMotionManagerDelegate {
                 "Motion access denied. Enable airpods in System Settings → Privacy & Security → Motion & Fitness.\n",
                 stderr
             )
-            exit(1)
+            if LaunchOptions.current.streamOnly { exit(1) }
         case .restricted:
             fputs("Motion access is restricted on this Mac.\n", stderr)
-            exit(1)
+            if LaunchOptions.current.streamOnly { exit(1) }
         case .notDetermined:
             fputs("Requesting Motion & Fitness access…\n", stderr)
         case .authorized:
@@ -150,7 +160,6 @@ final class Streamer: NSObject, CMHeadphoneMotionManagerDelegate {
             break
         }
 
-        manager.delegate = self
         manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
             guard let self else { return }
             if let error {
@@ -186,6 +195,7 @@ final class Streamer: NSObject, CMHeadphoneMotionManagerDelegate {
 
     func headphoneMotionManagerDidConnect(_ manager: CMHeadphoneMotionManager) {
         fputs("headphones connected\n", stderr)
+        beginMotionUpdatesIfPossible()
     }
 
     func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
@@ -194,11 +204,14 @@ final class Streamer: NSObject, CMHeadphoneMotionManagerDelegate {
 }
 
 if CommandLine.arguments.contains(where: { $0 == "--help" || $0 == "-h" }) {
-    fputs("usage: airpods [--stream-only] [host] [port]\n", stderr)
+    fputs("usage: airpods [--hub | --classic | --stream-only] [host] [port]\n", stderr)
     exit(0)
 }
 
-if ProcessInfo.processInfo.environment["AIRPODS_RESPONSIBLE"] != "1" {
+let launchOptions = parseLaunchOptions()
+LaunchOptions.current = launchOptions
+
+if ProcessInfo.processInfo.environment["AIRPODS_RESPONSIBLE"] != "1" && (launchOptions.streamOnly || launchOptions.classicMode) {
     relaunchThroughLaunchServices()
 }
 
@@ -207,35 +220,41 @@ if let path = ProcessInfo.processInfo.environment["AIRPODS_PIDFILE"] {
     try? "\(getpid())\n".write(toFile: path, atomically: true, encoding: .utf8)
 }
 
-let launchOptions = parseLaunchOptions()
-let pointer: Pointer? = launchOptions.streamOnly ? nil : Pointer()
-let gazeCamera: GazeCamera? = launchOptions.streamOnly ? nil : GazeCamera()
-if let pointer {
+if launchOptions.streamOnly {
+    let streamer = Streamer(host: launchOptions.host, port: launchOptions.port)
+    streamer.start()
+    RunLoop.main.run()
+} else if launchOptions.classicMode {
+    let pointer = Pointer()
+    let gazeCamera = GazeCamera()
     pointer.prepare()
     startPauseListener(pointer)
-}
-if let gazeCamera, let pointer {
     gazeCamera.onGaze = { features in
         pointer.update(gaze: features)
     }
     gazeCamera.start()
-}
 
-let jaw = JawClenchDetector()
-let streamer = Streamer(host: launchOptions.host, port: launchOptions.port)
-if let pointer {
+    let jaw = JawClenchDetector()
+    let streamer = Streamer(host: launchOptions.host, port: launchOptions.port)
     streamer.onSample = { t, yaw, pitch, roll, ax, ay, az, rx, ry, rz in
         pointer.update(yaw: yaw, pitch: pitch, roll: roll)
         if jaw.update(t: t, ax: ax, ay: ay, az: az, rx: rx, ry: ry, rz: rz) {
             pointer.clench()
         }
     }
-}
-streamer.start()
-if launchOptions.streamOnly {
-    RunLoop.main.run()
-} else {
+    streamer.start()
     NSApplication.shared.run()
+} else {
+    // SuperHub Mode (Default)
+    let app = NSApplication.shared
+    app.setActivationPolicy(.regular)
+    let streamer = Streamer(host: launchOptions.host, port: launchOptions.port)
+    Task { @MainActor in
+        HubController.shared.start(streamer: streamer, pointer: nil, gazeCamera: nil)
+        MenuBarController.shared.setup()
+        streamer.start()
+    }
+    app.run()
 }
 
 private let pausePort: UInt16 = 9997
@@ -408,37 +427,44 @@ private func postRelay(_ type: CGEventType, at point: CGPoint, source: CGEventSo
 }
 
 struct LaunchOptions {
+    static var current = LaunchOptions(streamOnly: false, classicMode: false, host: "127.0.0.1", port: 9999)
     var streamOnly: Bool
+    var classicMode: Bool
     var host: String
     var port: UInt16
 }
 
 func parseLaunchOptions() -> LaunchOptions {
     var streamOnly = false
+    var classicMode = false
     var positionals: [String] = []
     for argument in CommandLine.arguments.dropFirst() {
         switch argument {
         case "--stream-only":
             streamOnly = true
+        case "--classic":
+            classicMode = true
+        case "--hub":
+            classicMode = false
         case "--help", "-h":
             break
         default:
             if argument.hasPrefix("-") {
-                fputs("usage: airpods [--stream-only] [host] [port]\n", stderr)
+                fputs("usage: airpods [--hub | --classic | --stream-only] [host] [port]\n", stderr)
                 exit(2)
             }
             positionals.append(argument)
         }
     }
     if positionals.count > 2 {
-        fputs("usage: airpods [--stream-only] [host] [port]\n", stderr)
+        fputs("usage: airpods [--hub | --classic | --stream-only] [host] [port]\n", stderr)
         exit(2)
     }
     let host = positionals.first ?? "127.0.0.1"
     let portString = positionals.count > 1 ? positionals[1] : "9999"
     guard let port = UInt16(portString), port > 0 else {
-        fputs("usage: airpods [--stream-only] [host] [port]\n", stderr)
+        fputs("usage: airpods [--hub | --classic | --stream-only] [host] [port]\n", stderr)
         exit(2)
     }
-    return LaunchOptions(streamOnly: streamOnly, host: host, port: port)
+    return LaunchOptions(streamOnly: streamOnly, classicMode: classicMode, host: host, port: port)
 }

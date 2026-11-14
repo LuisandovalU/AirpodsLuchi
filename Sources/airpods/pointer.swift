@@ -126,6 +126,25 @@ final class Pointer {
             : "Pointer on.\n", stderr)
     }
 
+    func setPaused(_ value: Bool) {
+        pauseLock.lock()
+        paused = value
+        pauseLock.unlock()
+    }
+
+    func restartCalibration() {
+        pauseLock.lock()
+        paused = false
+        pauseLock.unlock()
+        model = nil
+        calibrated = false
+        buckets.removeAll()
+        dotFrames.removeAll()
+        dots = calibrationDots(in: Desktop.current().union)
+        dotIndex = 0
+        showCurrentDot()
+    }
+
     private func isPaused() -> Bool {
         pauseLock.lock()
         defer { pauseLock.unlock() }
