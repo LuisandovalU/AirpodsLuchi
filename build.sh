@@ -12,9 +12,12 @@ swiftc -O -target arm64-apple-macosx14.4 \
 BIN=".build/release/airpods"
 APP="airpods.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/airpods"
 cp "Sources/airpods/Info.plist" "$APP/Contents/Info.plist"
+if [ -d "Sources/airpods/Resources" ]; then
+    cp -R "Sources/airpods/Resources/." "$APP/Contents/Resources/"
+fi
 codesign --force --sign - "$APP"
 
 echo "Built $APP"

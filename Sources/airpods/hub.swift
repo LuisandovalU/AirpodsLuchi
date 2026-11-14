@@ -808,6 +808,7 @@ struct RadioStudioPanel: View {
     @State private var onAirStart: Date?
     @State private var elapsedSeconds: Int = 0
     @State private var timer: Timer?
+    @State private var soundboardBank: Int = 0 // 0 = Show / iCarly, 1 = Cabina DJ
 
     private var isOnAir: Bool { ear.isListening && audio.eqEnabled }
 
@@ -1032,22 +1033,66 @@ struct RadioStudioPanel: View {
 
                     Divider().opacity(0.3)
 
-                    Text("SOUNDBOARD DE CABINA (JINGLES)")
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text("SOUNDBOARD")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        HStack(spacing: 3) {
+                            soundboardTabPill("Show / iCarly", selected: soundboardBank == 0) {
+                                soundboardBank = 0
+                            }
+                            soundboardTabPill("Cabina DJ", selected: soundboardBank == 1) {
+                                soundboardBank = 1
+                            }
+                        }
+                    }
 
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
-                        sfxButton(title: "AIRHORN", subtitle: "Bocina DJ", icon: "megaphone.fill", color: .orange) {
-                            audio.triggerRadioSFX(1)
-                        }
-                        sfxButton(title: "DING CABINA", subtitle: "Entrada / Nota", icon: "bell.fill", color: .cyan) {
-                            audio.triggerRadioSFX(2)
-                        }
-                        sfxButton(title: "LASER FX", subtitle: "Transición", icon: "sparkles", color: .purple) {
-                            audio.triggerRadioSFX(3)
-                        }
-                        sfxButton(title: "SUB DROP", subtitle: "Golpe Grave", icon: "waveform.path.ecg", color: .mint) {
-                            audio.triggerRadioSFX(4)
+                        if soundboardBank == 0 {
+                            sfxButton(title: "APLAUSOS", subtitle: "Público / Ovación", icon: "hands.clap.fill", color: .cyan) {
+                                audio.triggerRadioSFX(5)
+                            }
+                            sfxButton(title: "RISAS", subtitle: "Sitcom / Comedia", icon: "face.smiling.inverse", color: .yellow) {
+                                audio.triggerRadioSFX(6)
+                            }
+                            sfxButton(title: "AWW / LLANTO", subtitle: "Público Triste", icon: "drop.fill", color: .blue) {
+                                audio.triggerRadioSFX(7)
+                            }
+                            sfxButton(title: "ABUCHEO", subtitle: "Booo / Público", icon: "hand.thumbsdown.fill", color: .red) {
+                                audio.triggerRadioSFX(8)
+                            }
+                            sfxButton(title: "BA-DUM-TSS", subtitle: "Remate Chiste", icon: "music.note", color: .purple) {
+                                audio.triggerRadioSFX(9)
+                            }
+                            sfxButton(title: "GRILLOS", subtitle: "Silencio Incómodo", icon: "waveform", color: .mint) {
+                                audio.triggerRadioSFX(10)
+                            }
+                            sfxButton(title: "CROSSOVER", subtitle: "Público Loco", icon: "flame.fill", color: .orange) {
+                                audio.triggerRadioSFX(13)
+                            }
+                            sfxButton(title: "ENTRADA ÉPICA", subtitle: "Gran Personaje", icon: "crown.fill", color: .pink) {
+                                audio.triggerRadioSFX(14)
+                            }
+                        } else {
+                            sfxButton(title: "AIRHORN", subtitle: "Bocina DJ", icon: "megaphone.fill", color: .orange) {
+                                audio.triggerRadioSFX(1)
+                            }
+                            sfxButton(title: "DING CABINA", subtitle: "Entrada / Nota", icon: "bell.fill", color: .cyan) {
+                                audio.triggerRadioSFX(2)
+                            }
+                            sfxButton(title: "LASER FX", subtitle: "Transición", icon: "sparkles", color: .purple) {
+                                audio.triggerRadioSFX(3)
+                            }
+                            sfxButton(title: "SUB DROP", subtitle: "Golpe Grave", icon: "waveform.path.ecg", color: .mint) {
+                                audio.triggerRadioSFX(4)
+                            }
+                            sfxButton(title: "SIRENA DJ", subtitle: "Alerta / Hype", icon: "light.beacon.max.fill", color: .red) {
+                                audio.triggerRadioSFX(11)
+                            }
+                            sfxButton(title: "SCRATCH", subtitle: "Vinilo DJ", icon: "opticaldisc.fill", color: .yellow) {
+                                audio.triggerRadioSFX(12)
+                            }
                         }
                     }
                 }
@@ -1096,6 +1141,22 @@ struct RadioStudioPanel: View {
         .buttonStyle(.plain)
     }
 
+    private func soundboardTabPill(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(selected ? Color.cyan.opacity(0.28) : Color.white.opacity(0.06))
+                        .overlay(Capsule().stroke(selected ? Color.cyan.opacity(0.7) : Color.white.opacity(0.1), lineWidth: 0.7))
+                )
+                .foregroundStyle(selected ? .white : .secondary)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func sfxButton(title: String, subtitle: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -1113,7 +1174,7 @@ struct RadioStudioPanel: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 7)
+            .padding(.vertical, 5.5)
             .background(
                 RoundedRectangle(cornerRadius: 7)
                     .fill(color.opacity(0.14))

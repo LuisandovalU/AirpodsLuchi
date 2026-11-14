@@ -281,9 +281,18 @@ final class EQDSP: @unchecked Sendable {
     private var pendingSfxType: Int = 0
     private var sfxPos: Int = 0
     private var sfxLen: Int = 0
+    private var sfxFracPos: Double = 0.0
     private var sfxPhase1: Double = 0.0
     private var sfxPhase2: Double = 0.0
     private var sfxPhase3: Double = 0.0
+    private var sfxRng: UInt64 = 0x9E3779B97F4A7C15
+    private var sfxFilterL: Double = 0.0
+    private var sfxFilterR: Double = 0.0
+    private var sfxEnvL: Double = 0.0
+    private var sfxEnvR: Double = 0.0
+    private var sfxClipL = [UnsafeMutablePointer<Float>?](repeating: nil, count: 16)
+    private var sfxClipR = [UnsafeMutablePointer<Float>?](repeating: nil, count: 16)
+    private var sfxClipCount = [Int](repeating: 0, count: 16)
 
     init() {
         for i in 0..<(Self.bands * Self.coeffsPerBand) {
@@ -309,6 +318,72 @@ final class EQDSP: @unchecked Sendable {
         echoBufR.initialize(repeating: 0, count: 65536)
         stutterBufL.initialize(repeating: 0, count: 32768)
         stutterBufR.initialize(repeating: 0, count: 32768)
+        loadSFXBank()
+    }
+
+    private func loadSFXBank() {
+        let names: [(Int, String)] = [
+            (5, "sfx_5_aplausos"),
+            (6, "sfx_6_risas"),
+            (7, "sfx_7_llanto"),
+            (8, "sfx_8_abucheo"),
+            (9, "sfx_9_badumtss"),
+            (10, "sfx_10_grillos"),
+            (11, "sfx_11_sirena"),
+            (12, "sfx_12_scratch"),
+            (13, "sfx_13_hype"),
+            (14, "sfx_14_entrada")
+        ]
+        var searchDirs: [URL] = []
+        if let res = Bundle.main.resourceURL {
+            searchDirs.append(res.appendingPathComponent("SFX"))
+        }
+        let exeDir = Bundle.main.bundleURL.deletingLastPathComponent()
+        searchDirs.append(exeDir.appendingPathComponent("Sources/airpods/Resources/SFX"))
+        searchDirs.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Sources/airpods/Resources/SFX"))
+
+        for (id, name) in names {
+            for dir in searchDirs {
+                let url = dir.appendingPathComponent("\(name).wav")
+                if let data = try? Data(contentsOf: url), parseWavIntoSlot(id: id, data: data) {
+                    break
+                }
+            }
+        }
+    }
+
+    private func parseWavIntoSlot(id: Int, data: Data) -> Bool {
+        guard id >= 0, id < 16, data.count > 44 else { return false }
+        // Find "data" chunk
+        var offset = 12
+        var dataOffset = -1
+        var dataSize = 0
+        while offset + 8 <= data.count {
+            let chunkID = String(bytes: data[offset..<(offset + 4)], encoding: .ascii) ?? ""
+            let size = Int(data[offset + 4]) | (Int(data[offset + 5]) << 8) | (Int(data[offset + 6]) << 16) | (Int(data[offset + 7]) << 24)
+            if chunkID == "data" {
+                dataOffset = offset + 8
+                dataSize = min(size, data.count - dataOffset)
+                break
+            }
+            offset += 8 + max(0, size) + (size & 1)
+        }
+        guard dataOffset > 0, dataSize >= 4 else { return false }
+        let frames = dataSize / 4 // 16-bit stereo = 4 bytes/frame
+        let ptrL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+        let ptrR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress?.advanced(by: dataOffset).assumingMemoryBound(to: Int16.self) else { return }
+            let scale: Float = 1.0 / 32768.0
+            for i in 0..<frames {
+                ptrL[i] = Float(Int16(littleEndian: base[i * 2])) * scale
+                ptrR[i] = Float(Int16(littleEndian: base[i * 2 + 1])) * scale
+            }
+        }
+        sfxClipL[id] = ptrL
+        sfxClipR[id] = ptrR
+        sfxClipCount[id] = frames
+        return true
     }
 
     /// Called from the main thread.
@@ -436,13 +511,21 @@ final class EQDSP: @unchecked Sendable {
                 sfxType = pendingSfxType
                 pendingSfxType = 0
                 sfxPos = 0
+                sfxFracPos = 0.0
                 sfxPhase1 = 0; sfxPhase2 = 0; sfxPhase3 = 0
+                sfxFilterL = 0; sfxFilterR = 0
+                sfxEnvL = 0; sfxEnvR = 0
+                sfxRng = 0x9E3779B97F4A7C15 ^ UInt64(max(1, Int(fsCached)))
                 let fs = max(fsCached, 48000)
-                switch sfxType {
-                case 1: sfxLen = Int(0.72 * fs) // Airhorn
-                case 2: sfxLen = Int(0.85 * fs) // Ding cabina
-                case 3: sfxLen = Int(0.42 * fs) // Laser FX
-                default: sfxLen = Int(0.75 * fs) // Sub Drop
+                if sfxType < 16, sfxClipCount[sfxType] > 0 {
+                    sfxLen = Int(Double(sfxClipCount[sfxType]) * (fs / 48000.0))
+                } else {
+                    switch sfxType {
+                    case 1: sfxLen = Int(0.72 * fs) // Airhorn
+                    case 2: sfxLen = Int(0.85 * fs) // Ding cabina
+                    case 3: sfxLen = Int(0.42 * fs) // Laser FX
+                    default: sfxLen = Int(0.75 * fs) // Sub Drop
+                    }
                 }
             }
             spatialYaw = pendingSpatialYaw
@@ -758,37 +841,53 @@ final class EQDSP: @unchecked Sendable {
 
             let sfxOn = sfxType > 0 && sfxPos < sfxLen && outChannels >= 2
             if sfxOn {
-                let fs = max(fsCached, 48000)
+                let fs = max(fsCached, 44100)
                 let prog = Double(sfxPos) / Double(max(1, sfxLen))
-                var sfxSample = 0.0
-                switch sfxType {
-                case 1: // Airhorn triple chord
-                    let env = min(1.0, prog * 28.0) * (1.0 - prog)
-                    sfxPhase1 += 2.0 * Double.pi * 440.0 / fs
-                    sfxPhase2 += 2.0 * Double.pi * 554.37 / fs
-                    sfxPhase3 += 2.0 * Double.pi * 659.25 / fs
-                    let rawHorn = tanh((sin(sfxPhase1) + sin(sfxPhase2) + sin(sfxPhase3)) * 0.95)
-                    sfxSample = rawHorn * 0.28 * env
-                case 2: // Ding cabina (Do-Mi-Sol chime)
-                    let env = min(1.0, prog * 60.0) * exp(-prog * 5.2)
-                    sfxPhase1 += 2.0 * Double.pi * 783.99 / fs
-                    sfxPhase2 += 2.0 * Double.pi * 1046.50 / fs
-                    sfxSample = (sin(sfxPhase1) * 0.6 + sin(sfxPhase2) * 0.4) * 0.30 * env
-                case 3: // Laser sweep
-                    let env = min(1.0, prog * 35.0) * (1.0 - prog)
-                    let freq = 2400.0 * pow(140.0 / 2400.0, prog)
-                    sfxPhase1 += 2.0 * Double.pi * freq / fs
-                    sfxSample = sin(sfxPhase1) * 0.28 * env
-                default: // Sub drop
-                    let env = min(1.0, prog * 45.0) * exp(-prog * 3.2)
-                    let freq = 115.0 * pow(36.0 / 115.0, min(1.0, prog * 1.4))
-                    sfxPhase1 += 2.0 * Double.pi * freq / fs
-                    sfxSample = sin(sfxPhase1) * 0.42 * env
+                var sfxL = 0.0
+                var sfxR = 0.0
+
+                if sfxType < 16, let bufL = sfxClipL[sfxType], let bufR = sfxClipR[sfxType], sfxClipCount[sfxType] > 1 {
+                    let count = sfxClipCount[sfxType]
+                    let idx0 = min(count - 1, Int(sfxFracPos))
+                    let idx1 = min(count - 1, idx0 + 1)
+                    let frac = sfxFracPos - Double(idx0)
+                    sfxL = (Double(bufL[idx0]) * (1.0 - frac) + Double(bufL[idx1]) * frac) * 0.62
+                    sfxR = (Double(bufR[idx0]) * (1.0 - frac) + Double(bufR[idx1]) * frac) * 0.62
+                    sfxFracPos += 48000.0 / fs
+                } else {
+                    switch sfxType {
+                    case 1: // Airhorn triple chord
+                        let env = min(1.0, prog * 28.0) * (1.0 - prog)
+                        sfxPhase1 += 2.0 * Double.pi * 440.0 / fs
+                        sfxPhase2 += 2.0 * Double.pi * 554.37 / fs
+                        sfxPhase3 += 2.0 * Double.pi * 659.25 / fs
+                        let rawHorn = tanh((sin(sfxPhase1) + sin(sfxPhase2) + sin(sfxPhase3)) * 0.95)
+                        let s = rawHorn * 0.28 * env
+                        sfxL = s; sfxR = s
+                    case 2: // Ding cabina (Do-Mi-Sol chime)
+                        let env = min(1.0, prog * 60.0) * exp(-prog * 5.2)
+                        sfxPhase1 += 2.0 * Double.pi * 783.99 / fs
+                        sfxPhase2 += 2.0 * Double.pi * 1046.50 / fs
+                        let s = (sin(sfxPhase1) * 0.6 + sin(sfxPhase2) * 0.4) * 0.30 * env
+                        sfxL = s; sfxR = s
+                    case 3: // Laser sweep
+                        let env = min(1.0, prog * 35.0) * (1.0 - prog)
+                        let freq = 2400.0 * pow(140.0 / 2400.0, prog)
+                        sfxPhase1 += 2.0 * Double.pi * freq / fs
+                        let s = sin(sfxPhase1) * 0.28 * env
+                        sfxL = s; sfxR = s
+                    default: // Sub drop
+                        let env = min(1.0, prog * 45.0) * exp(-prog * 3.2)
+                        let freq = 115.0 * pow(36.0 / 115.0, min(1.0, prog * 1.4))
+                        sfxPhase1 += 2.0 * Double.pi * freq / fs
+                        let s = sin(sfxPhase1) * 0.42 * env
+                        sfxL = s; sfxR = s
+                    }
                 }
                 sfxPos += 1
                 if sfxPos >= sfxLen { sfxType = 0 }
-                frameTmp[0] += sfxSample
-                frameTmp[1] += sfxSample
+                frameTmp[0] += sfxL
+                frameTmp[1] += sfxR
                 peak = max(peak, max(abs(frameTmp[0]), abs(frameTmp[1])))
             }
 
